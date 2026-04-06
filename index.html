@@ -764,56 +764,78 @@ function getSheetUserName() {
 }
 
 async function syncToSheets(action, payload) {
-  if (!state.scriptUrl) return null;
+  if (!state.scriptUrl) {
+    console.log('[Sheets] scriptUrl não configurado, salvando só local.');
+    return null;
+  }
+  const bodyObj = { action, userName: getSheetUserName(), ...payload };
+  const bodyStr = JSON.stringify(bodyObj);
+  console.log('[Sheets] POST →', action, '| userName:', getSheetUserName(), '| url:', state.scriptUrl);
+  console.log('[Sheets] body:', bodyStr);
   try {
-    // Usar text/plain evita o preflight CORS que o Apps Script não suporta.
-    // O script lê e-postData.contents normalmente com JSON.parse.
-    const body = JSON.stringify({ action, userName: getSheetUserName(), ...payload });
     const res  = await fetch(state.scriptUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body,
+      body: bodyStr,
     });
+    console.log('[Sheets] HTTP status:', res.status, res.statusText);
     const text = await res.text();
-    try { return JSON.parse(text); } catch { return { ok: true }; }
+    console.log('[Sheets] resposta raw:', text.substring(0, 500));
+    let parsed;
+    try { parsed = JSON.parse(text); } catch(pe) {
+      console.error('[Sheets] JSON inválido na resposta:', pe.message);
+      showStatus('⚠ Resposta inválida do Apps Script', 'err');
+      return null;
+    }
+    console.log('[Sheets] resposta parsed:', parsed);
+    if (parsed.ok === false) {
+      showStatus('⚠ Sheets erro: ' + (parsed.error || JSON.stringify(parsed)), 'err');
+    }
+    return parsed;
   } catch(e) {
-    console.warn('Sheets sync error:', e);
-    showStatus('⚠ Erro ao sincronizar com Sheets', 'err');
+    console.error('[Sheets] fetch FALHOU:', e.name, e.message);
+    showStatus('⚠ Falha de rede ao acessar Sheets: ' + e.message, 'err');
     return null;
   }
 }
 
 async function fetchFromSheets() {
-  if (!state.scriptUrl) return false;
+  if (!state.scriptUrl) {
+    console.log('[Sheets] fetchFromSheets: sem scriptUrl.');
+    return false;
+  }
   showLoading(true, 'Buscando dados…');
+  const url = `${state.scriptUrl}?action=getAll`
+            + `&month=${state.month+1}`
+            + `&year=${state.year}`
+            + `&userName=${encodeURIComponent(getSheetUserName())}`;
+  console.log('[Sheets] GET →', url);
   try {
-    const url = `${state.scriptUrl}?action=getAll`
-              + `&month=${state.month+1}`
-              + `&year=${state.year}`
-              + `&userName=${encodeURIComponent(getSheetUserName())}`;
     const res  = await fetch(url);
+    console.log('[Sheets] GET status:', res.status, res.statusText);
     const text = await res.text();
+    console.log('[Sheets] GET resposta raw:', text.substring(0, 500));
     let data;
     try { data = JSON.parse(text); } catch(pe) {
-      console.warn('fetchFromSheets: resposta inválida:', text.substring(0,200));
+      console.error('[Sheets] GET JSON inválido:', pe.message, '| raw:', text.substring(0,300));
       showLoading(false);
       updateSheetsBadge(false);
-      showStatus('⚠ Resposta inválida do Sheets', 'err');
+      showStatus('⚠ Resposta inválida do Apps Script. Veja o console (F12).', 'err');
       return false;
     }
 
     if (data?.error) {
-      console.warn('fetchFromSheets error from script:', data.error);
+      console.error('[Sheets] GET erro do script:', data.error);
       showLoading(false);
       updateSheetsBadge(false);
-      showStatus('⚠ ' + data.error, 'err');
+      showStatus('⚠ Apps Script: ' + data.error, 'err');
       return false;
     }
 
-    // Atualiza despesas — SOMENTE substitui as do mês atual para não
-    // apagar dados de outros meses que só estão no localStorage.
+    console.log('[Sheets] expenses recebidos:', data?.expenses?.length ?? 0);
+    console.log('[Sheets] categories recebidas:', data?.categories?.length ?? 0);
+
     if (Array.isArray(data?.expenses)) {
-      // Remove despesas do mês atual do estado local e substitui pelas do Sheets
       const otherMonths = state.expenses.filter(e => {
         const d = new Date(e.date + 'T12:00:00');
         return !(d.getMonth() === state.month && d.getFullYear() === state.year);
@@ -821,7 +843,6 @@ async function fetchFromSheets() {
       state.expenses = [...otherMonths, ...data.expenses];
     }
 
-    // Atualiza categorias se o Sheets tiver dados
     if (Array.isArray(data?.categories) && data.categories.length > 0) {
       const localMap = {};
       state.categories.forEach(c => { localMap[c.id] = c; });
@@ -834,12 +855,13 @@ async function fetchFromSheets() {
     save();
     showLoading(false);
     updateSheetsBadge(true);
+    console.log('[Sheets] fetchFromSheets concluído com sucesso.');
     return true;
   } catch(e) {
-    console.warn('fetchFromSheets exception:', e);
+    console.error('[Sheets] fetchFromSheets EXCEPTION:', e.name, e.message);
     showLoading(false);
     updateSheetsBadge(false);
-    showStatus('⚠ Falha ao conectar com Sheets', 'err');
+    showStatus('⚠ Falha de rede ao buscar Sheets: ' + e.message, 'err');
     return false;
   }
 }
@@ -1325,6 +1347,40 @@ document.addEventListener('keydown', e => {
   if (e.key==='n' && !anyOpen) openAdd();
   if (e.key==='Enter' && document.getElementById('overlayAdd').classList.contains('open')) submitExpense();
 });
+
+// ─────────────────────────────────────────────
+// DEBUG HELPER — chame debugSheets() no console
+// ─────────────────────────────────────────────
+window.debugSheets = async function() {
+  console.log('=== DEBUG SHEETS ===');
+  console.log('currentUser:', currentUser);
+  console.log('scriptUrl:', state.scriptUrl);
+  console.log('userKey:', userKey());
+  console.log('userName para Sheets:', getSheetUserName());
+  console.log('expenses no state:', state.expenses.length);
+  console.log('localStorage raw:', localStorage.getItem(userKey()));
+
+  if (!state.scriptUrl) { console.log('❌ scriptUrl não configurado!'); return; }
+
+  console.log('\n--- Testando GET ---');
+  try {
+    const url = `${state.scriptUrl}?action=getAll&month=${state.month+1}&year=${state.year}&userName=${encodeURIComponent(getSheetUserName())}`;
+    console.log('URL:', url);
+    const r = await fetch(url);
+    console.log('Status:', r.status);
+    const t = await r.text();
+    console.log('Resposta:', t.substring(0, 1000));
+  } catch(e) { console.error('GET falhou:', e); }
+
+  console.log('\n--- Testando POST (ping) ---');
+  try {
+    const body = JSON.stringify({ action: 'ping', userName: getSheetUserName() });
+    const r = await fetch(state.scriptUrl, { method:'POST', headers:{'Content-Type':'text/plain'}, body });
+    console.log('Status:', r.status);
+    const t = await r.text();
+    console.log('Resposta:', t.substring(0, 500));
+  } catch(e) { console.error('POST falhou:', e); }
+};
 
 // ─────────────────────────────────────────────
 // INIT
