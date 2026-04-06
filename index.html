@@ -459,7 +459,7 @@ input:focus, select:focus { border-color: var(--accent); }
     <div class="config-pane active" id="tabScript">
       <div class="form-group">
         <label>URL do Web App (Apps Script)</label>
-        <input type="text" id="scriptUrl" placeholder="https://script.google.com/macros/s/AKfycbygaEq_ltSGosoltcuekG3dgTgfYMtD2jh1PgZfRovQkMwmIRhfOMQx4jHlSJTvryYl/exec">
+        <input type="text" id="scriptUrl" placeholder="https://script.google.com/macros/s/…/exec">
       </div>
       <div class="hint">
         Cole aqui a URL do seu Apps Script implantado como <strong>Web App</strong>.<br>
@@ -766,13 +766,21 @@ function getSheetUserName() {
 async function syncToSheets(action, payload) {
   if (!state.scriptUrl) return null;
   try {
-    const res = await fetch(state.scriptUrl, {
+    // Usar text/plain evita o preflight CORS que o Apps Script não suporta.
+    // O script lê e-postData.contents normalmente com JSON.parse.
+    const body = JSON.stringify({ action, userName: getSheetUserName(), ...payload });
+    const res  = await fetch(state.scriptUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, userName: getSheetUserName(), ...payload }),
+      headers: { 'Content-Type': 'text/plain' },
+      body,
     });
-    return await res.json();
-  } catch(e) { console.warn('Sheets sync error:', e); return null; }
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return { ok: true }; }
+  } catch(e) {
+    console.warn('Sheets sync error:', e);
+    showStatus('⚠ Erro ao sincronizar com Sheets', 'err');
+    return null;
+  }
 }
 
 async function fetchFromSheets() {
@@ -784,25 +792,54 @@ async function fetchFromSheets() {
               + `&year=${state.year}`
               + `&userName=${encodeURIComponent(getSheetUserName())}`;
     const res  = await fetch(url);
-    const data = await res.json();
-    if (data?.expenses)   state.expenses   = data.expenses;
-    if (data?.categories && data.categories.length) {
-      // Merge remote categories — keep fixedValue from local if not in remote
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch(pe) {
+      console.warn('fetchFromSheets: resposta inválida:', text.substring(0,200));
+      showLoading(false);
+      updateSheetsBadge(false);
+      showStatus('⚠ Resposta inválida do Sheets', 'err');
+      return false;
+    }
+
+    if (data?.error) {
+      console.warn('fetchFromSheets error from script:', data.error);
+      showLoading(false);
+      updateSheetsBadge(false);
+      showStatus('⚠ ' + data.error, 'err');
+      return false;
+    }
+
+    // Atualiza despesas — SOMENTE substitui as do mês atual para não
+    // apagar dados de outros meses que só estão no localStorage.
+    if (Array.isArray(data?.expenses)) {
+      // Remove despesas do mês atual do estado local e substitui pelas do Sheets
+      const otherMonths = state.expenses.filter(e => {
+        const d = new Date(e.date + 'T12:00:00');
+        return !(d.getMonth() === state.month && d.getFullYear() === state.year);
+      });
+      state.expenses = [...otherMonths, ...data.expenses];
+    }
+
+    // Atualiza categorias se o Sheets tiver dados
+    if (Array.isArray(data?.categories) && data.categories.length > 0) {
       const localMap = {};
-      state.categories.forEach(c => localMap[c.id] = c);
+      state.categories.forEach(c => { localMap[c.id] = c; });
       state.categories = data.categories.map(rc => ({
         ...localMap[rc.id], ...rc,
         fixedValue: rc.fixedValue ?? localMap[rc.id]?.fixedValue ?? 0,
       }));
     }
+
     save();
     showLoading(false);
     updateSheetsBadge(true);
     return true;
   } catch(e) {
-    console.warn('fetchFromSheets error:', e);
+    console.warn('fetchFromSheets exception:', e);
     showLoading(false);
     updateSheetsBadge(false);
+    showStatus('⚠ Falha ao conectar com Sheets', 'err');
     return false;
   }
 }
@@ -1041,11 +1078,15 @@ async function submitExpense() {
   const data  = document.getElementById('fData').value;
 
   if (!valor || valor<=0) { showStatus('Informe um valor válido', 'err'); return; }
-  if (!data)              { showStatus('Informe a data', 'err');         return; }
+  if (!data)              { showStatus('Informe a data', 'err');          return; }
   if (!selectedCat)       { showStatus('Selecione uma categoria', 'err'); return; }
 
+  // Captura antes de qualquer mutação de estado
+  const isEditing = !!state.editingExpId;
+  const editId    = state.editingExpId;
+
   const expense = {
-    id:          state.editingExpId || ('id_'+Date.now()),
+    id:          editId || ('id_' + Date.now()),
     value:       valor,
     description: desc,
     date:        data,
@@ -1053,18 +1094,27 @@ async function submitExpense() {
     createdAt:   new Date().toISOString(),
   };
 
-  if (state.editingExpId) {
-    const idx = state.expenses.findIndex(x => x.id===state.editingExpId);
-    if (idx>=0) state.expenses[idx] = expense;
+  if (isEditing) {
+    const idx = state.expenses.findIndex(x => x.id === editId);
+    if (idx >= 0) state.expenses[idx] = expense;
+    else state.expenses.push(expense);
   } else {
     state.expenses.push(expense);
   }
 
-  save(); closeAdd(); render();
-  showStatus(state.editingExpId ? 'Despesa atualizada ✓' : 'Despesa registrada ✓', 'ok');
+  // Salva localmente primeiro — garante persistência mesmo se Sheets falhar
+  save();
+  closeAdd();
+  render();
+  showStatus(isEditing ? 'Despesa atualizada ✓' : 'Despesa registrada ✓', 'ok');
 
+  // Sincroniza com Sheets em background
   if (state.scriptUrl) {
-    syncToSheets(state.editingExpId ? 'update' : 'add', { expense });
+    const action = isEditing ? 'update' : 'add';
+    const result = await syncToSheets(action, { expense });
+    if (result && result.ok === false) {
+      showStatus('⚠ Salvo localmente, erro no Sheets: ' + (result.error||'?'), 'err');
+    }
   }
 }
 
