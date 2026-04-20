@@ -1,21 +1,21 @@
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg: #7c8895;
-  --surface: #ffffff;
-  --surface2: #f0ede8;
-  --surface3: #e8e4de;
-  --border: #ddd9d2;
-  --border-dark: #c8c3bb;
-  --accent: #2d6a4f;
-  --accent-light: rgba(45,106,79,0.10);
-  --accent-glow: rgba(45,106,79,0.18);
-  --text: #1a1916;
-  --text-2: #4a4740;
-  --muted: #8f8b84;
-  --danger: #b5382a;
-  --danger-dim: rgba(181,56,42,0.10);
-  --warning: #b45309;
+  --bg: #5f6b78;
+  --surface: #2f343a;
+  --surface2: #383e45;
+  --surface3: #424950;
+  --border: #4d555d;
+  --border-dark: #5a636c;
+  --accent: #3a7d5c;
+  --accent-light: rgba(58,125,92,0.12);
+  --accent-glow: rgba(58,125,92,0.22);
+  --text: #e6e9ed;
+  --text-2: #b8c0c8;
+  --muted: #8b949e;
+  --danger: #c24a3a;
+  --danger-dim: rgba(194,74,58,0.12);
+  --warning: #d97706;
   --warning-dim: rgba(180,83,9,0.10);
   --income: #1d4ed8;
   --income-dim: rgba(29,78,216,0.10);
